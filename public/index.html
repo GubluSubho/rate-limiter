@@ -1,0 +1,307 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Rate Limiter Live Demo</title>
+<style>
+:root{--bg:#0d1117;--panel:#161b22;--line:#2a313c;--text:#e6edf3;--mute:#8b949e;--ok:#3fb950;--bad:#f85149;--warn:#d29922;--accent:#58a6ff}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font-family:system-ui,"Segoe UI",Arial,sans-serif;font-size:14px}
+header{padding:18px 24px;border-bottom:1px solid var(--line)}
+h1{margin:0;font-size:20px}
+header p{margin:4px 0 0;color:var(--mute)}
+main{display:grid;grid-template-columns:300px 1fr 300px;gap:16px;padding:16px 24px;align-items:start}
+@media(max-width:1100px){main{grid-template-columns:1fr}}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:14px;margin-bottom:16px}
+.card h2{margin:0 0 10px;font-size:12px;text-transform:uppercase;letter-spacing:.07em;color:var(--mute)}
+label{display:block;margin:10px 0 4px;color:var(--mute);font-size:12px}
+select{width:100%;background:var(--bg);color:var(--text);border:1px solid var(--line);border-radius:6px;padding:8px}
+input[type=range]{width:100%}
+button{background:#21262d;color:var(--text);border:1px solid var(--line);border-radius:6px;padding:8px 12px;cursor:pointer;font-size:13px}
+button:hover{border-color:var(--accent)}
+button.primary{background:var(--accent);color:#04111f;border-color:var(--accent);font-weight:600}
+button.danger{background:var(--bad);border-color:var(--bad);color:#fff}
+.row{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}
+.big{font-size:30px;font-weight:700;letter-spacing:.02em}
+.ok{color:var(--ok)}.bad{color:var(--bad)}.warn{color:var(--warn)}.mute{color:var(--mute)}
+.gauge{height:18px;background:var(--bg);border:1px solid var(--line);border-radius:9px;overflow:hidden;margin:10px 0 6px}
+.gauge>div{height:100%;width:0;background:var(--ok);transition:width .25s,background .25s}
+.stats{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-top:10px}
+.stat{background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:8px;text-align:center}
+.stat b{display:block;font-size:20px}
+.timeline{display:flex;flex-wrap:wrap;gap:3px;min-height:20px}
+.dot{width:12px;height:12px;border-radius:3px}
+.dot.ok{background:var(--ok)}.dot.bad{background:var(--bad)}.dot.warn{background:var(--warn)}
+table{width:100%;border-collapse:collapse;font-size:12px}
+th,td{text-align:left;padding:5px 6px;border-bottom:1px solid var(--line)}
+th{color:var(--mute);font-weight:500}
+.bar{height:10px;background:var(--bad);border-radius:5px;overflow:hidden;margin:4px 0 10px}
+.bar>div{height:100%;background:var(--ok)}
+.algo{border:1px solid var(--line);border-radius:8px;padding:10px;margin-bottom:8px;opacity:.55}
+.algo.active{opacity:1;border-color:var(--accent)}
+.algo b{display:block;margin-bottom:3px}
+.algo span{color:var(--mute);font-size:12px;line-height:1.4}
+.note{font-size:12px;color:var(--mute);line-height:1.5}
+</style>
+</head>
+<body>
+<header>
+  <h1>Rate Limiter Live Demo</h1>
+  <p>Node.js + Express + Redis. Every button below calls the real API, and every colored square is a real HTTP response.</p>
+</header>
+<main>
+  <section>
+    <div class="card">
+      <h2>1. Choose what to test</h2>
+      <label>Endpoint</label>
+      <select id="endpoint">
+        <option value="global">GET / (global, sliding window counter)</option>
+        <option value="login">POST /login (token bucket)</option>
+        <option value="search">GET /search (sliding window log)</option>
+      </select>
+      <label>Who is calling (identity)</label>
+      <select id="identity">
+        <option value="new">New client (limit 10/min)</option>
+        <option value="anon">Anonymous, my IP (limit 10/min)</option>
+        <option value="free">Free tier key (limit 20/min)</option>
+        <option value="pro">Pro tier key (limit 100/min)</option>
+      </select>
+      <div class="row"><button id="newClient">New random client</button></div>
+    </div>
+    <div class="card">
+      <h2>2. Send requests</h2>
+      <div class="row">
+        <button class="primary" id="send1">Send 1</button>
+        <button id="send10">Burst 10</button>
+        <button id="send50">Burst 50</button>
+      </div>
+      <label>Auto-send speed: <span id="rpsLabel">3</span> requests/sec</label>
+      <input type="range" id="rps" min="1" max="20" value="3">
+      <div class="row">
+        <button id="auto">Start auto-send</button>
+        <button id="clear">Clear view</button>
+      </div>
+      <p class="note">Burst sends all requests at the same moment, which tests concurrency. Clear view only clears this page. Counters in Redis reset by themselves when the time window passes.</p>
+    </div>
+    <div class="card">
+      <h2>Algorithm on this endpoint</h2>
+      <div class="algo" id="a-sliding-window-counter"><b>Sliding window counter</b><span>Two counters (this minute and last minute). Estimate = last * overlap + current. Very little memory, but approximate.</span></div>
+      <div class="algo" id="a-token-bucket"><b>Token bucket</b><span>A bucket of 5 tokens that refills steadily. Each request takes one token. Allows short bursts, then a steady rate.</span></div>
+      <div class="algo" id="a-sliding-window-log"><b>Sliding window log</b><span>Stores the timestamp of every request in a sorted set. Exact count over the last 10 seconds, but uses more memory.</span></div>
+    </div>
+  </section>
+
+  <section>
+    <div class="card">
+      <h2>Live result</h2>
+      <div class="big mute" id="verdict">Waiting for a request</div>
+      <div class="gauge"><div id="gaugeBar"></div></div>
+      <div><span id="remaining">-</span> of <span id="limit">-</span> requests remaining &middot; <span id="resetTxt" class="mute">no window yet</span></div>
+      <div class="note" id="blockedBy" style="margin-top:6px"></div>
+      <div class="stats">
+        <div class="stat"><b id="sTotal">0</b><span class="mute">sent</span></div>
+        <div class="stat"><b id="sOk" class="ok">0</b><span class="mute">allowed (200)</span></div>
+        <div class="stat"><b id="sBad" class="bad">0</b><span class="mute">blocked (429/503)</span></div>
+      </div>
+    </div>
+    <div class="card">
+      <h2>Request timeline (green = allowed, red = blocked 429, amber = refused 503)</h2>
+      <div class="timeline" id="timeline"></div>
+    </div>
+    <div class="card">
+      <h2>Last requests</h2>
+      <table>
+        <thead><tr><th>#</th><th>Time</th><th>Endpoint</th><th>Status</th><th>Left</th><th>Retry-After</th><th>Blocked by</th><th>ms</th></tr></thead>
+        <tbody id="log"></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section>
+    <div class="card">
+      <h2>Server counters (from /metrics)</h2>
+      <div id="metrics" class="note">Loading...</div>
+      <p class="note">Green = allowed, red = blocked. These counters live in Redis, so they include requests from every client, not only this page.</p>
+    </div>
+    <div class="card">
+      <h2>How to read this</h2>
+      <p class="note">
+        Each request goes through the limiter before it reaches the route. The limiter runs a Lua script inside Redis that counts, decides and updates in one atomic step. If the answer is no, the server replies 429 with a Retry-After header.<br><br>
+        Note that /login and /search also pass through the global limiter first, so use the Pro identity for those two to see their own limits clearly.
+      </p>
+    </div>
+  </section>
+</main>
+
+<script>
+var ENDPOINTS = {
+  global: { label: "GET /", method: "GET", path: "/", algo: "sliding-window-counter" },
+  login: { label: "POST /login", method: "POST", path: "/login", algo: "token-bucket" },
+  search: { label: "GET /search", method: "GET", path: "/search", algo: "sliding-window-log" }
+};
+var clientKey = "demo-" + Math.random().toString(36).slice(2, 8);
+var seq = 0, total = 0, okCount = 0, badCount = 0;
+var logRows = [], dots = [];
+var resetAt = 0, autoTimer = null;
+
+function el(id) { return document.getElementById(id); }
+function esc(s) { return String(s).replace(/[&<>"]/g, function (c) { return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]; }); }
+
+function currentKey() {
+  var v = el("identity").value;
+  if (v === "anon") return null;
+  if (v === "free") return "free-key-123";
+  if (v === "pro") return "pro-key-456";
+  return clientKey;
+}
+
+function highlightAlgo() {
+  var a = ENDPOINTS[el("endpoint").value].algo;
+  ["sliding-window-counter", "token-bucket", "sliding-window-log"].forEach(function (n) {
+    el("a-" + n).classList.toggle("active", n === a);
+  });
+}
+
+async function sendOne() {
+  var ep = ENDPOINTS[el("endpoint").value];
+  var n = ++seq;
+  var headers = {};
+  var key = currentKey();
+  if (key) headers["x-api-key"] = key;
+  var t0 = performance.now();
+  var entry = { n: n, time: new Date().toLocaleTimeString(), ep: ep.label, status: 0, left: "-", retry: "-", by: "-", ms: 0, limit: null, reset: null };
+  try {
+    var r = await fetch(ep.path, { method: ep.method, headers: headers, cache: "no-store" });
+    entry.ms = Math.round(performance.now() - t0);
+    entry.status = r.status;
+    entry.limit = r.headers.get("RateLimit-Limit");
+    entry.left = r.headers.get("RateLimit-Remaining");
+    entry.reset = r.headers.get("RateLimit-Reset");
+    entry.retry = r.headers.get("Retry-After") || "-";
+    if (r.status === 429) {
+      try { var b = await r.json(); entry.by = b.algorithm || "-"; } catch (e) {}
+    } else if (r.status === 503) {
+      entry.by = "fail-closed";
+    }
+  } catch (e) {
+    entry.status = 0;
+    entry.ms = Math.round(performance.now() - t0);
+  }
+  record(entry);
+}
+
+function record(e) {
+  total++;
+  if (e.status === 200) okCount++; else badCount++;
+  logRows.unshift(e);
+  if (logRows.length > 14) logRows.pop();
+  dots.push(e);
+  if (dots.length > 150) dots.shift();
+  render(e);
+}
+
+function render(e) {
+  el("sTotal").textContent = total;
+  el("sOk").textContent = okCount;
+  el("sBad").textContent = badCount;
+
+  var v = el("verdict");
+  if (e.status === 200) { v.textContent = "ALLOWED (200)"; v.className = "big ok"; }
+  else if (e.status === 429) { v.textContent = "BLOCKED (429)"; v.className = "big bad"; }
+  else if (e.status === 503) { v.textContent = "REFUSED (503, fail-closed)"; v.className = "big warn"; }
+  else { v.textContent = "NO RESPONSE"; v.className = "big warn"; }
+
+  if (e.limit !== null) {
+    var lim = Number(e.limit), left = Number(e.left);
+    el("limit").textContent = lim;
+    el("remaining").textContent = left;
+    var pct = lim > 0 ? Math.max(0, Math.min(100, (left / lim) * 100)) : 0;
+    var bar = el("gaugeBar");
+    bar.style.width = pct + "%";
+    bar.style.background = pct > 50 ? "var(--ok)" : pct > 20 ? "var(--warn)" : "var(--bad)";
+    var secs = e.status === 429 && e.retry !== "-" ? Number(e.retry) : Number(e.reset || 0);
+    resetAt = Date.now() + secs * 1000;
+  }
+  el("blockedBy").textContent = e.status === 429 ? "Rejected by the " + e.by + " limiter. Retry after " + e.retry + " s." : "";
+
+  var tl = el("timeline");
+  tl.innerHTML = dots.map(function (d) {
+    var c = d.status === 200 ? "ok" : d.status === 429 ? "bad" : "warn";
+    return '<div class="dot ' + c + '" title="#' + d.n + " status " + d.status + " left " + esc(d.left) + '"></div>';
+  }).join("");
+
+  el("log").innerHTML = logRows.map(function (d) {
+    var c = d.status === 200 ? "ok" : d.status === 429 ? "bad" : "warn";
+    return "<tr><td>" + d.n + "</td><td>" + esc(d.time) + "</td><td>" + esc(d.ep) + '</td><td class="' + c + '">' + d.status + "</td><td>" + esc(d.left) + "</td><td>" + esc(d.retry) + "</td><td>" + esc(d.by) + "</td><td>" + d.ms + "</td></tr>";
+  }).join("");
+}
+
+setInterval(function () {
+  var left = Math.max(0, Math.ceil((resetAt - Date.now()) / 1000));
+  if (resetAt) el("resetTxt").textContent = left > 0 ? "window resets in " + left + " s" : "window has reset";
+}, 250);
+
+async function burst(n) {
+  var jobs = [];
+  for (var i = 0; i < n; i++) jobs.push(sendOne());
+  await Promise.all(jobs);
+}
+
+function toggleAuto() {
+  var b = el("auto");
+  if (autoTimer) {
+    clearInterval(autoTimer); autoTimer = null;
+    b.textContent = "Start auto-send"; b.classList.remove("danger");
+  } else {
+    var rps = Number(el("rps").value);
+    autoTimer = setInterval(sendOne, Math.round(1000 / rps));
+    b.textContent = "Stop auto-send"; b.classList.add("danger");
+  }
+}
+
+function clearView() {
+  seq = 0; total = 0; okCount = 0; badCount = 0; logRows = []; dots = []; resetAt = 0;
+  el("sTotal").textContent = 0; el("sOk").textContent = 0; el("sBad").textContent = 0;
+  el("timeline").innerHTML = ""; el("log").innerHTML = "";
+  el("verdict").textContent = "Waiting for a request"; el("verdict").className = "big mute";
+  el("remaining").textContent = "-"; el("limit").textContent = "-";
+  el("gaugeBar").style.width = "0"; el("resetTxt").textContent = "no window yet"; el("blockedBy").textContent = "";
+}
+
+async function pollMetrics() {
+  try {
+    var m = await (await fetch("/metrics", { cache: "no-store" })).json();
+    var html = "";
+    ["global", "login", "search"].forEach(function (p) {
+      var a = Number(m[p + ":allowed"] || 0), b = Number(m[p + ":blocked"] || 0);
+      var pct = a + b > 0 ? (a / (a + b)) * 100 : 0;
+      html += "<div><b>" + p + "</b> &middot; " + a + " allowed, " + b + ' blocked</div><div class="bar"><div style="width:' + pct + '%"></div></div>';
+    });
+    el("metrics").innerHTML = html;
+  } catch (e) {
+    el("metrics").textContent = "metrics unavailable";
+  }
+}
+
+el("send1").onclick = sendOne;
+el("send10").onclick = function () { burst(10); };
+el("send50").onclick = function () { burst(50); };
+el("auto").onclick = toggleAuto;
+el("clear").onclick = clearView;
+el("newClient").onclick = function () {
+  clientKey = "demo-" + Math.random().toString(36).slice(2, 8);
+  el("identity").value = "new";
+  clearView();
+};
+el("endpoint").onchange = highlightAlgo;
+el("rps").oninput = function () {
+  el("rpsLabel").textContent = el("rps").value;
+  if (autoTimer) { toggleAuto(); toggleAuto(); }
+};
+highlightAlgo();
+pollMetrics();
+setInterval(pollMetrics, 2000);
+</script>
+</body>
+</html>

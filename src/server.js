@@ -1,3 +1,4 @@
+const path = require("path");
 const express = require("express");
 const { rateLimiter } = require("./limiter");
 const { redis } = require("./redis");
@@ -14,6 +15,9 @@ const tierLimit = (req) => {
   const tier = TIERS[req.headers["x-api-key"]];
   return tier ? tier.limit : 10; // anonymous = 10
 };
+
+// Dashboard (static files, registered before the limiter so it is never limited)
+app.use("/dashboard", express.static(path.join(__dirname, "..", "public")));
 
 // Unlimited operational endpoints (registered before the global limiter)
 app.get("/health", (req, res) => res.json({ status: "ok" }));
