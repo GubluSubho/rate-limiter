@@ -1,52 +1,81 @@
+
 const path = require("path");
 const express = require("express");
 const { rateLimiter } = require("./limiter");
 const { redis } = require("./redis");
 
 const app = express();
-// Allow requests from the Vercel dashboard
+
+app.set("trust proxy", true);
+
+// CORS middleware — must be before all routes and rate limiters
 app.use((req, res, next) => {
+  const allowedOrigin = "https://rate-limiter-omega.vercel.app";
   const origin = req.headers.origin;
 
-  if (origin === "https://rate-limiter-omega.vercel.app") {
-    res.setHeader("Access-Control-Allow-Origin", origin);
+  if (origin === allowedOrigin) {
+    res.setHeader("Access-Control-Allow-Origin", allowedOrigin);
     res.setHeader("Vary", "Origin");
-    res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
-    res.setHeader("Access-Control-Allow-Headers", "Content-Type, x-api-key");
+
+    res.setHeader(
+      "Access-Control-Allow-Methods",
+      "GET, POST, OPTIONS"
+    );
+
+    res.setHeader(
+      "Access-Control-Allow-Headers",
+      "Content-Type, x-api-key"
+    );
+
+    res.setHeader(
+      "Access-Control-Expose-Headers",
+      "RateLimit-Limit, RateLimit-Remaining, RateLimit-Reset, Retry-After"
+    );
   }
 
+  // Handle browser preflight requests before rate limiting
   if (req.method === "OPTIONS") {
-    return res.sendStatus(204);
+    return res.sendStatus(origin === allowedOrigin ? 204 : 403);
   }
 
   next();
 });
-app.set("trust proxy", true);
 
 // Demo API keys mapped to tiers
 const TIERS = {
   "free-key-123": { name: "free", limit: 20 },
   "pro-key-456": { name: "pro", limit: 100 },
 };
+
+// Anonymous users get a limit of 10 requests per minute
 const tierLimit = (req) => {
   const tier = TIERS[req.headers["x-api-key"]];
-  return tier ? tier.limit : 10; // anonymous = 10
+  return tier ? tier.limit : 10;
 };
 
-// Dashboard (static files, registered before the limiter so it is never limited)
-app.use("/dashboard", express.static(path.join(__dirname, "..", "public")));
+// Dashboard static files
+app.use(
+  "/dashboard",
+  express.static(path.join(__dirname, "..", "public"))
+);
 
-// Unlimited operational endpoints (registered before the global limiter)
-app.get("/health", (req, res) => res.json({ status: "ok" }));
+// Health endpoint
+app.get("/health", (req, res) => {
+  res.json({ status: "ok" });
+});
+
+// Redis metrics endpoint
 app.get("/metrics", async (req, res) => {
   try {
-    res.json(await redis.hgetall("rl:stats"));
-  } catch (e) {
+    const metrics = await redis.hgetall("rl:stats");
+    res.json(metrics);
+  } catch (error) {
+    console.error("[metrics]", error.message);
     res.status(503).json({ error: "metrics unavailable" });
   }
 });
 
-// Global: sliding window counter, tiered per API key (per minute)
+// Global sliding-window-counter rate limiter
 app.use(
   rateLimiter({
     algorithm: "sliding-window-counter",
@@ -56,9 +85,12 @@ app.use(
   })
 );
 
-app.get("/", (req, res) => res.json({ message: "Request allowed" }));
+// Default API endpoint
+app.get("/", (req, res) => {
+  res.json({ message: "Request allowed" });
+});
 
-// Token bucket: burst of 5, then refills 5 per minute. Fail-closed (503) if Redis is down.
+// Login endpoint — token bucket algorithm
 app.post(
   "/login",
   rateLimiter({
@@ -68,10 +100,12 @@ app.post(
     keyPrefix: "login",
     failOpen: false,
   }),
-  (req, res) => res.json({ message: "Login attempt processed" })
+  (req, res) => {
+    res.json({ message: "Login attempt processed" });
+  }
 );
 
-// Sliding window log: exactly 5 requests per 10 seconds
+// Search endpoint — sliding-window-log algorithm
 app.get(
   "/search",
   rateLimiter({
@@ -80,8 +114,14 @@ app.get(
     windowMs: 10000,
     keyPrefix: "search",
   }),
-  (req, res) => res.json({ results: [] })
+  (req, res) => {
+    res.json({ results: [] });
+  }
 );
 
+// Start server
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log("Listening on http://localhost:" + PORT));
+
+app.listen(PORT, () => {
+  console.log(`Listening on port ${PORT}`);
+});
