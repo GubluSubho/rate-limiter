@@ -4,6 +4,23 @@ const { rateLimiter } = require("./limiter");
 const { redis } = require("./redis");
 
 const app = express();
+// Allow requests from the Vercel dashboard
+app.use((req, res, next) => {
+  const origin = req.headers.origin;
+
+  if (origin === "https://rate-limiter-omega.vercel.app") {
+    res.setHeader("Access-Control-Allow-Origin", origin);
+    res.setHeader("Vary", "Origin");
+    res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+    res.setHeader("Access-Control-Allow-Headers", "Content-Type, x-api-key");
+  }
+
+  if (req.method === "OPTIONS") {
+    return res.sendStatus(204);
+  }
+
+  next();
+});
 app.set("trust proxy", true);
 
 // Demo API keys mapped to tiers

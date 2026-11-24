@@ -215,6 +215,7 @@ dl{margin:0}dt{font-weight:700;margin-top:8px}dd{margin:2px 0 0;color:var(--mute
 </div>
 
 <script>
+  var API_BASE = "https://rate-limiter-api-rs1z.onrender.com";
 var ENDPOINTS = {
   global: { label: "GET /", method: "GET", path: "/", algo: "sliding-window-counter" },
   login: { label: "POST /login", method: "POST", path: "/login", algo: "token-bucket" },
@@ -285,7 +286,11 @@ async function sendRequest(epName, key) {
   var t0 = performance.now();
   var e = { n: n, time: new Date().toLocaleTimeString(), epName: epName, ep: ep.label, key: key || "ip", status: 0, left: "-", retry: "-", by: "-", ms: 0, limit: null, reset: null };
   try {
-    var r = await fetch(ep.path, { method: ep.method, headers: headers, cache: "no-store" });
+    var r = await fetch(API_BASE + ep.path, {
+  method: ep.method,
+  headers: headers,
+  cache: "no-store"
+});
     e.ms = Math.round(performance.now() - t0);
     e.status = r.status;
     e.limit = r.headers.get("RateLimit-Limit");
@@ -557,7 +562,9 @@ function clearView() {
 
 async function pollMetrics() {
   try {
-    var m = await (await fetch("/metrics", { cache: "no-store" })).json();
+    var m = await (await fetch(API_BASE + "/metrics", {
+  cache: "no-store"
+})).json();
     var names = { global: "Main door (GET /)", login: "POST /login", search: "GET /search" };
     var html = "";
     ["global", "login", "search"].forEach(function (p) {
