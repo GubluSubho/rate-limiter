@@ -5,6 +5,7 @@ const { rateLimiter } = require("./limiter");
 const { redis } = require("./redis");
 
 const app = express();
+console.log("RUNNING UPDATED SERVER WITH CORS FIX - VERSION 2");
 
 app.set("trust proxy", true);
 
